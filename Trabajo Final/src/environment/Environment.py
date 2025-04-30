@@ -5,21 +5,27 @@ from utils.AvellanedaUtils import optimal_spread, orders_intensity_lambda
 
 
 class AvellanedaEnv(gym.Env):
-    def __init__(self, s0, T, dt, sigma, beta, k, A, kappa, seed=0, is_discrete=True, spread_ticks=21):
+    def __init__(self, s0, T, dt, sigma, k, A, kappa, seed=0, is_discrete=True):
         super().__init__()
 
+        self.dw_stats = None
+        self.ws = None
+        self.rewards = None
+        self.c_ = None
+        self.n = None
+        self.t = None
+        self.q = None
+        self.s = None
+        self.w = None
         self.s0 = s0
         self.T = T
         self.dt = dt
         self.sigma = sigma
-        self.beta = beta
         self.k = k
         self.A = A
         self.kappa = kappa
         self.is_discrete = is_discrete
-        self.spread_ticks = spread_ticks  # e.g., 0.1 tick * 21 = [0.0, 2.0]
         self.tick_size = 0.1
-        self.max_spread = self.tick_size * (spread_ticks - 1)
         self.sqrtdt = np.sqrt(dt)
 
         self.observation_space = spaces.Box(
@@ -27,7 +33,7 @@ class AvellanedaEnv(gym.Env):
             high=np.array([np.inf, np.inf, T], dtype=np.float32),
             dtype=np.float32
         )
-        self.num_ticks = int(2.0 / self.tick_size)
+        self.num_ticks = int(1.0 / self.tick_size)
         self.action_space = spaces.Discrete(self.num_ticks ** 2)
         # self.action_space = spaces.Discrete(21)
         self.seed(seed)
@@ -49,17 +55,13 @@ class AvellanedaEnv(gym.Env):
         self.ws = []
         self.dw_stats = []
 
-        obs = np.array((self.s, self.q, self.T - self.t), dtype=np.float32)
-        return obs, {}
+        obs = np.array((0, self.q, self.T - self.t), dtype=np.float32)
+        return obs, {"s": self.s}
 
     def step(self, action):
         bid = self.s
         ask = self.s
         if self.is_discrete:
-            # despl = (action - (21 - 1) / 2) * 4 / (20 - 1)
-            # ba_spread = spread(self.beta, self.sigma, self.T - self.t, self.k)
-            # bid += - despl - ba_spread / 2
-            # ask += - despl + ba_spread / 2
             bid_tick = action // self.num_ticks
             ask_tick = action % self.num_ticks
             bid_spread = bid_tick * self.tick_size
@@ -68,21 +70,21 @@ class AvellanedaEnv(gym.Env):
             ask += ask_spread
         else:
             despl = float(action)
-            ba_spread = optimal_spread(self.beta, self.sigma, self.T - self.t, self.k)
+            ba_spread = optimal_spread(self.kappa, self.sigma, self.T - self.t, self.k)
             bid += - despl - ba_spread / 2
             ask += - despl + ba_spread / 2
 
-        lb = orders_intensity_lambda(self.A, self.k, self.s - bid)
-        la = orders_intensity_lambda(self.A, self.k, ask - self.s)
+        lambda_b = orders_intensity_lambda(self.A, self.k, self.s - bid)
+        lambda_a = orders_intensity_lambda(self.A, self.k, ask - self.s)
 
-        dnb = 1 if self.np_random.uniform() <= lb * self.dt else 0
-        dna = 1 if self.np_random.uniform() <= la * self.dt else 0
+        dnb = 1 if self.np_random.uniform() <= lambda_b * self.dt else 0
+        dna = 1 if self.np_random.uniform() <= lambda_a * self.dt else 0
         self.q += dnb - dna
 
         self.c_ += -dnb * bid + dna * ask
         old_s = self.s
         self.s += self.sigma * self.sqrtdt * (1 if self.np_random.uniform() < 0.5 else -1)
-        ret = (self.s-old_s)/old_s
+        ret = (self.s - old_s) / old_s
         previous_w = self.w
         self.w = self.c_ + self.q * self.s
         dw = self.w - previous_w
@@ -96,6 +98,6 @@ class AvellanedaEnv(gym.Env):
         truncated = False
 
         obs = np.array((ret, self.q, self.T - self.t), dtype=np.float32)
-        info = {"w": self.w}
+        info = {"w": self.w, "s": self.s}
 
         return obs, reward, terminated, truncated, info
